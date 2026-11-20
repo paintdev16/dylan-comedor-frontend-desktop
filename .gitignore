@@ -1,0 +1,46 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+*.pdb
+
+# Claves privadas, secretos y variables de entorno (NUNCA subir)
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.secret
+secrets/
+
+# Binarios compilados, instaladores y paquetes de release locales
+*.exe
+*.msi
+*.sig
+*.zip
+*.tar.gz
+dist/
+release/
+
+# Estado de ejecución local, datos y logs
+*.log
+*.db
+*.sqlite
+*.sqlite3
+events.jsonl
+update.lock
+.updater/
+
+# Notas y archivos temporales locales
+*.txt
+*.tmp
+*.bak
+
+# Editores, IDEs y sistema operativo
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini

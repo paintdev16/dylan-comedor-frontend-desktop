@@ -1,0 +1,239 @@
+name: Compilar Dylan para Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Etiqueta existente para compilar y preparar su borrador
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  pilot:
+    runs-on: windows-latest
+    outputs:
+      tag: ${{ steps.release_ref.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - name: Seleccionar la etiqueta del release
+        id: release_ref
+        shell: pwsh
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:REQUESTED_TAG }
+          if ($tag) {
+            if ($tag -cnotmatch '^v(?:[0-9]+\.[0-9]+\.[0-9]+|1\.0\.0-beta\.[1-9][0-9]*)$') {
+              throw "Etiqueta no admitida: $tag"
+            }
+            "tag=$tag" >> $env:GITHUB_OUTPUT
+            "ref=refs/tags/$tag" >> $env:GITHUB_OUTPUT
+          }
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release_ref.outputs.ref }}
+      - name: Registrar el commit compilado
+        id: source
+        shell: pwsh
+        run: |
+          $commit = git rev-parse HEAD
+          if ($LASTEXITCODE) { throw 'No se pudo consultar el commit compilado' }
+          "commit=$commit" >> $env:GITHUB_OUTPUT
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validar versión y etiqueta
+        id: version
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.release_ref.outputs.tag }}
+        run: |
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE) { throw 'No se pudo consultar Cargo' }
+          $version = ($metadata.packages | Where-Object name -ceq 'dylan').version
+          if ($version -notmatch '^(?:[0-9]+\.[0-9]+\.[0-9]+|1\.0\.0-beta\.[1-9][0-9]*)$') { throw "Versión inválida: $version" }
+          if ($env:RELEASE_TAG -and $env:RELEASE_TAG -cne "v$version") { throw "La etiqueta debe ser v$version" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Comprobar Dylan
+        run: cargo check --locked --workspace
+      - name: Ejecutar Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Ejecutar pruebas
+        run: cargo test --locked --workspace
+      - name: Compilar Dylan
+        run: cargo build --locked --release -p dylan
+      - name: Descargar el ejecutable oficial de Veltrix
+        shell: pwsh
+        run: |
+          $release = Get-Content -Raw apps/desktop/installer/veltrix-release.json | ConvertFrom-Json
+          New-Item -Force -ItemType Directory target/veltrix-release | Out-Null
+          Invoke-WebRequest "https://github.com/paintdev16/veltrix/releases/download/$($release.tag)/veltrix.exe" -OutFile target/veltrix-release/veltrix.exe
+      - name: Instalar NSIS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Find-MakeNsis {
+            $candidates = @(
+              "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+              "${env:ProgramFiles}\NSIS\makensis.exe",
+              'C:\ProgramData\chocolatey\bin\makensis.exe'
+            )
+            foreach ($path in $candidates) {
+              if ($path -and (Test-Path -LiteralPath $path)) { return (Resolve-Path -LiteralPath $path).Path }
+            }
+            $cmd = Get-Command makensis.exe -ErrorAction SilentlyContinue
+            if ($cmd) { return $cmd.Source }
+            $found = Get-ChildItem -Path 'C:\ProgramData\chocolatey\lib' -Filter 'makensis.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { return $found.FullName }
+            return $null
+          }
+
+          $makensis = Find-MakeNsis
+          if (-not $makensis) {
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              choco install nsis --yes --no-progress
+              if ($LASTEXITCODE -eq 0) {
+                $makensis = Find-MakeNsis
+                if ($makensis) { break }
+              }
+              Write-Warning "Intento $attempt de choco install nsis no dejó makensis.exe disponible (exit=$LASTEXITCODE)"
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+          }
+          if (-not $makensis) {
+            Write-Host 'Chocolatey falló o no expuso makensis.exe; intentando instalar NSIS con winget...'
+            winget install --id NSIS.NSIS -e --silent --accept-source-agreements --accept-package-agreements
+            $makensis = Find-MakeNsis
+          }
+          if (-not $makensis) {
+            throw 'No se pudo instalar ni localizar makensis.exe'
+          }
+          Write-Host "MakeNSIS localizado en: $makensis"
+          "MAKENSIS_PATH=$makensis" >> $env:GITHUB_ENV
+      - name: Crear Setup NSIS y manifiesto
+        shell: pwsh
+        run: |
+          ./apps/desktop/installer/package-pilot.ps1 -MakeNsis $env:MAKENSIS_PATH -Dylan target/release/dylan.exe -Veltrix target/veltrix-release/veltrix.exe -Output target/pilot-ci
+      - name: Comprobar que NSIS rechaza un destino ajeno
+        shell: pwsh
+        env:
+          DYLAN_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $setup = "target/pilot-ci/Dylan-Setup-$env:DYLAN_VERSION-x64.exe"
+          $other = Join-Path $PWD 'target/pilot-ci/destino no permitido'
+          $run = Start-Process -FilePath $setup -ArgumentList @('/S', "/D=$other") -Wait -PassThru -WindowStyle Hidden
+          if ($run.ExitCode -ne 20 -or (Test-Path -LiteralPath $other)) {
+            throw "NSIS no rechazó la ruta alternativa (código $($run.ExitCode))"
+          }
+      - name: Probar actualizaciones repetidas, bloqueos transitorios y rollback NSIS
+        shell: pwsh
+        run: |
+          ./apps/desktop/installer/test-repeated-updates.ps1 -MakeNsis $env:MAKENSIS_PATH -TestStable
+      - name: Guardar archivos para revisión y firma
+        uses: actions/upload-artifact@v6
+        with:
+          name: Dylan-${{ steps.version.outputs.version }}-sin-firmar
+          path: |
+            target/pilot-ci/Dylan-Setup-*-x64.exe
+            target/pilot-ci/update-windows-x86_64.json
+            target/pilot-ci/inputs/dylan.exe
+          if-no-files-found: error
+
+  draft:
+    name: Firmar y preparar release en borrador
+    needs: pilot
+    if: needs.pilot.outputs.tag != '' && github.repository == 'paintdev16/dylan-comedor-frontend-desktop'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: dylan-draft-${{ needs.pilot.outputs.tag }}
+      cancel-in-progress: false
+    steps:
+      - name: Consultar si ya existe un release para la etiqueta
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.pilot.outputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $api = "repos/$env:GITHUB_REPOSITORY/releases"
+          $tag = $env:RELEASE_TAG
+          $releases = gh api --paginate "${api}?per_page=100" --jq '.[] | [.tag_name, .draft, .id, .html_url] | @tsv'
+          if ($LASTEXITCODE) { throw 'No se pudieron consultar los releases de GitHub' }
+          foreach ($line in $releases) {
+            $fields = $line -split "`t"
+            if ($fields[0] -ceq $tag) {
+              $kind = if ($fields[1] -eq 'true') { 'Borrador existente' } else { 'Release ya publicado' }
+              "$kind $tag (ID $($fields[2]))" >> $env:GITHUB_STEP_SUMMARY
+              if ($fields[1] -eq 'true') {
+                "draft_id=$($fields[2])" >> $env:GITHUB_OUTPUT
+              } else {
+                "published=true" >> $env:GITHUB_OUTPUT
+              }
+              return
+            }
+          }
+
+      - uses: actions/checkout@v6
+        if: steps.release.outputs.published != 'true'
+        with:
+          ref: ${{ needs.pilot.outputs.commit }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.release.outputs.published != 'true'
+      - uses: actions/download-artifact@v8
+        if: steps.release.outputs.published != 'true'
+        with:
+          name: Dylan-${{ needs.pilot.outputs.version }}-sin-firmar
+          path: target/signed-release
+      - name: Compilar el firmador de Veltrix
+        if: steps.release.outputs.published != 'true'
+        shell: pwsh
+        run: |
+          cargo install --locked --git https://github.com/paintdev16/veltrix.git --tag v0.1.3 --root target/veltrix-tools veltrix-sign
+          if ($LASTEXITCODE) { throw 'No se pudo compilar veltrix-sign' }
+      - name: Firmar el manifiesto Ed25519
+        if: steps.release.outputs.published != 'true'
+        shell: pwsh
+        env:
+          DYLAN_SIGNING_KEY: ${{ secrets.DYLAN_SIGNING_KEY }}
+        run: |
+          $value = $env:DYLAN_SIGNING_KEY
+          Remove-Item Env:DYLAN_SIGNING_KEY -ErrorAction SilentlyContinue
+          if (-not $value -or $value.Trim() -notmatch '^[0-9a-fA-F]{64}$') {
+            throw 'DYLAN_SIGNING_KEY debe contener la semilla de Dylan en 64 caracteres hexadecimales'
+          }
+          $key = [Convert]::FromHexString($value.Trim())
+          $value = $null
+          $keyPath = Join-Path $env:RUNNER_TEMP ("dylan-{0}.key" -f [guid]::NewGuid())
+          try {
+            [IO.File]::WriteAllBytes($keyPath, $key)
+            ./apps/desktop/installer/sign-pilot.ps1 -Bundle target/signed-release -Signer target/veltrix-tools/bin/veltrix-sign.exe -RawKey $keyPath
+          } finally {
+            [Array]::Clear($key)
+            if (Test-Path -LiteralPath $keyPath) { Remove-Item -LiteralPath $keyPath }
+          }
+      - name: Adjuntar y verificar el paquete firmado sin publicar
+        if: steps.release.outputs.published != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRAFT_ID: ${{ steps.release.outputs.draft_id }}
+        run: |
+          $params = @{
+            Bundle = 'target/signed-release'
+            CargoManifest = 'Cargo.toml'
+            DraftOnly = $true
+          }
+          if ($env:DRAFT_ID) { $params.DraftId = [long]$env:DRAFT_ID }
+          $result = ./apps/desktop/installer/publish-release.ps1 @params
+          $result | Out-Host
+          $result | Select-Object -Last 2 | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
