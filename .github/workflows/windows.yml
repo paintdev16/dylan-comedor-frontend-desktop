@@ -17,6 +17,7 @@ permissions:
 
 jobs:
   pilot:
+    name: windows
     runs-on: windows-latest
     outputs:
       tag: ${{ steps.release_ref.outputs.tag }}
