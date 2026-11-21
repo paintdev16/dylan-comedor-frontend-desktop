@@ -264,6 +264,33 @@ fn decode_key(key: &str) -> Result<[u8; 32]> {
         .map_err(|_| "Se esperaban 32 bytes hexadecimales".into())
 }
 
+fn ensure_private_dir(path: &Path) -> io::Result<()> {
+    fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn create_private_tempdir(parent: &Path, prefix: &str) -> io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(prefix);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let dir = builder.tempdir_in(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
 pub fn download(
     update: &Update,
     downloaded: &AtomicU64,
@@ -271,8 +298,8 @@ pub fn download(
 ) -> std::result::Result<tempfile::TempDir, String> {
     let run = || -> Result<_> {
         let jobs = install_root()?.join(".updater/jobs");
-        fs::create_dir_all(&jobs)?;
-        let job = tempfile::Builder::new().prefix("job-").tempdir_in(jobs)?;
+        ensure_private_dir(&jobs)?;
+        let job = create_private_tempdir(&jobs, "job-")?;
         fs::write(job.path().join("manifest.json"), &update.bytes)?;
         fs::write(job.path().join("manifest.sig"), &update.signature)?;
         let client = veltrix_core::http_client()?;
@@ -466,11 +493,9 @@ fn prepare_rollback(root: &Path, control: &Path) -> Result<()> {
     {
         return Err("El instalador de respaldo no corresponde al release de Dylan".into());
     }
-    let transaction = tempfile::Builder::new()
-        .prefix("rollback-")
-        .tempdir_in(control)?;
+    let transaction = create_private_tempdir(control, "rollback-")?;
     let candidate = transaction.path().join("candidate");
-    fs::create_dir(&candidate)?;
+    ensure_private_dir(&candidate)?;
     fs::write(candidate.join("manifest.json"), bytes)?;
     fs::write(candidate.join("manifest.sig"), signature)?;
     veltrix_core::download(
@@ -727,6 +752,22 @@ mod tests {
             resolve_updater_executable(&control, &pin).unwrap(),
             versioned
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_dirs_disallow_group_and_other_write_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let jobs = root.path().join("jobs");
+        ensure_private_dir(&jobs).unwrap();
+        let job = create_private_tempdir(&jobs, "job-").unwrap();
+
+        let jobs_mode = fs::metadata(&jobs).unwrap().permissions().mode();
+        let job_mode = fs::metadata(job.path()).unwrap().permissions().mode();
+        assert_eq!(jobs_mode & 0o022, 0);
+        assert_eq!(job_mode & 0o022, 0);
     }
 
     #[test]
