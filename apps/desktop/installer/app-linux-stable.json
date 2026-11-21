@@ -1,0 +1,8 @@
+{
+  "app_id": "com.paintdev16.dylan",
+  "name": "Dylan",
+  "executable": "dylan",
+  "channel": "stable",
+  "public_key": "da8a3021015810af9c1957365265ad18b872718d93dd62b5c70541bd058394cf",
+  "max_package_size": 536870912
+}

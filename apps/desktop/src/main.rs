@@ -30,7 +30,6 @@ fn main() {
         return;
     }
 
-    #[cfg(windows)]
     let _instance = {
         if let Err(error) = infra::veltrix::prepare_startup() {
             eprintln!("No se pudo inicializar Dylan: {error}");

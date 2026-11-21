@@ -1,4 +1,5 @@
 {
   "tag": "v0.1.5",
-  "sha256": "6d61b6b5fad92058342d8c202dc53eeebce5e4505c4f2dce420a1889ab8387cc"
+  "sha256": "6d61b6b5fad92058342d8c202dc53eeebce5e4505c4f2dce420a1889ab8387cc",
+  "linux_x86_64_sha256": "1da7f2b80c30524fa5840b6a3318b48aac4a20b7fa1fb5492bd4a69c9afa50b4"
 }

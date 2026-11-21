@@ -26,6 +26,30 @@ const CHANNEL: Channel = if IS_BETA {
     Channel::Stable
 };
 
+#[cfg(windows)]
+const EXECUTABLE_NAME: &str = "dylan.exe";
+#[cfg(not(windows))]
+const EXECUTABLE_NAME: &str = "dylan";
+
+#[cfg(windows)]
+const PACKAGE_FILENAME: &str = "package.exe";
+#[cfg(not(windows))]
+const PACKAGE_FILENAME: &str = "package.tar.gz";
+
+fn expected_release_asset_name(version: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("Dylan-Setup-{version}-x64.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "Dylan-Update-{version}-linux-{}.tar.gz",
+            std::env::consts::ARCH
+        )
+    }
+}
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Adaptador de actualizaciones de Veltrix con confirmación de arranque (protocolo 2).
@@ -172,8 +196,9 @@ fn find_update() -> Result<Option<Update>> {
     })?;
     let description = manifest.manifest();
     let version = description.version.to_string();
+    let asset_name = expected_release_asset_name(&version);
     let expected = format!(
-        "https://github.com/{OWNER}/{REPO}/releases/download/{}/Dylan-Setup-{version}-x64.exe",
+        "https://github.com/{OWNER}/{REPO}/releases/download/{}/{asset_name}",
         release.tag_name
     );
     if description.url != expected
@@ -206,7 +231,8 @@ fn installed_policy(root: &Path) -> Result<(Policy, Vec<[u8; 32]>)> {
 }
 
 fn pilot_policy(config: Config, version: &str) -> Result<(Policy, Vec<[u8; 32]>)> {
-    if config.app_id != APP_ID || config.executable != "dylan.exe" || config.channel != CHANNEL {
+    if config.app_id != APP_ID || config.executable != EXECUTABLE_NAME || config.channel != CHANNEL
+    {
         return Err("Configuración de confianza de Dylan inválida".into());
     }
     if version != env!("CARGO_PKG_VERSION") {
@@ -224,7 +250,7 @@ fn pilot_policy(config: Config, version: &str) -> Result<(Policy, Vec<[u8; 32]>)
         app_id: config.app_id,
         channel: config.channel,
         current_version: version.parse()?,
-        platform: "windows".into(),
+        platform: std::env::consts::OS.into(),
         architecture: std::env::consts::ARCH.into(),
         public_key: decode_key(&config.public_key)?,
         max_package_size: config.max_package_size,
@@ -254,7 +280,7 @@ pub fn download(
         veltrix_core::download(
             &client,
             &update.manifest,
-            &job.path().join("package.exe"),
+            &job.path().join(PACKAGE_FILENAME),
             &AtomicBool::new(false),
             |done, _| {
                 downloaded.store(done, Ordering::Relaxed);
@@ -296,13 +322,35 @@ pub fn handoff(job: tempfile::TempDir) -> std::result::Result<(), String> {
 #[derive(Deserialize)]
 struct VeltrixPin {
     tag: String,
+    #[allow(dead_code)]
     sha256: String,
+    #[allow(dead_code)]
+    linux_x86_64_sha256: String,
+}
+
+impl VeltrixPin {
+    fn expected_sha256(&self) -> &str {
+        #[cfg(windows)]
+        {
+            &self.sha256
+        }
+        #[cfg(not(windows))]
+        {
+            &self.linux_x86_64_sha256
+        }
+    }
 }
 
 fn resolve_updater_executable(control: &Path, pin: &VeltrixPin) -> Result<PathBuf> {
+    #[cfg(windows)]
     let candidates = [
         control.join(format!("veltrix-{}.exe", pin.tag)),
         control.join("veltrix.exe"),
+    ];
+    #[cfg(not(windows))]
+    let candidates = [
+        control.join(format!("veltrix-{}", pin.tag)),
+        control.join("veltrix"),
     ];
     let mut last_error: Option<String> = None;
     for candidate in candidates {
@@ -312,7 +360,7 @@ fn resolve_updater_executable(control: &Path, pin: &VeltrixPin) -> Result<PathBu
             }
             continue;
         }
-        match veltrix_core::verify_file_sha256(&candidate, &pin.sha256) {
+        match veltrix_core::verify_file_sha256(&candidate, pin.expected_sha256()) {
             Ok(()) => return Ok(candidate),
             Err(error) => last_error = Some(error.to_string()),
         }
@@ -338,8 +386,8 @@ fn check_rollback_manifest(manifest: &VerifiedManifest, root: &Path, current: &s
     let hash = manifest
         .installed_sha256
         .as_deref()
-        .ok_or("El respaldo no especifica el SHA-256 de dylan.exe")?;
-    veltrix_core::verify_file_sha256(&root.join("dylan.exe"), hash)?;
+        .ok_or("El respaldo no especifica el SHA-256 del ejecutable instalado")?;
+    veltrix_core::verify_file_sha256(&root.join(EXECUTABLE_NAME), hash)?;
     Ok(())
 }
 
@@ -389,7 +437,7 @@ fn prepare_rollback(root: &Path, control: &Path) -> Result<()> {
         let signature = read_rollback_file(&backup.join("manifest.sig"), 64)?;
         let verified = policy.verify_manifest_with_keys(&bytes, &signature, &keys)?;
         check_rollback_manifest(&verified, root, &current)?;
-        let package = backup.join("package.exe");
+        let package = backup.join(PACKAGE_FILENAME);
         require_plain_path(&package, false)?;
         veltrix_core::verify_package(&package, &verified)?;
         Ok(())
@@ -408,9 +456,8 @@ fn prepare_rollback(root: &Path, control: &Path) -> Result<()> {
     let (verified, bytes, signature) =
         veltrix_core::release_manifest_with_keys(&client, &policy, release, &keys)?;
     check_rollback_manifest(&verified, root, &current)?;
-    let url = format!(
-        "https://github.com/{OWNER}/{REPO}/releases/download/{tag}/Dylan-Setup-{current}-x64.exe"
-    );
+    let asset_name = expected_release_asset_name(&current);
+    let url = format!("https://github.com/{OWNER}/{REPO}/releases/download/{tag}/{asset_name}");
     if verified.manifest().url != url
         || !release
             .assets
@@ -429,7 +476,7 @@ fn prepare_rollback(root: &Path, control: &Path) -> Result<()> {
     veltrix_core::download(
         &client,
         &verified,
-        &candidate.join("package.exe"),
+        &candidate.join(PACKAGE_FILENAME),
         &AtomicBool::new(false),
         |_, _| {},
     )?;
@@ -494,10 +541,17 @@ mod tests {
     use super::*;
     use veltrix_core::UpdateOutcome;
 
+    #[cfg(windows)]
     const CONFIG: &str = if IS_BETA {
         include_str!("../../installer/app.json")
     } else {
         include_str!("../../installer/app-stable.json")
+    };
+    #[cfg(not(windows))]
+    const CONFIG: &str = if IS_BETA {
+        include_str!("../../installer/app-linux.json")
+    } else {
+        include_str!("../../installer/app-linux-stable.json")
     };
     const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -554,11 +608,12 @@ mod tests {
     }
 
     #[test]
-    fn pinned_veltrix_release_matches_v0_1_4_and_valid_sha256() {
+    fn pinned_veltrix_release_matches_v0_1_5_and_valid_sha256() {
         let pin: VeltrixPin =
             serde_json::from_str(include_str!("../../installer/veltrix-release.json")).unwrap();
         assert_eq!(pin.tag, "v0.1.5");
         assert!(decode_key(&pin.sha256).is_ok());
+        assert!(decode_key(&pin.linux_x86_64_sha256).is_ok());
     }
 
     #[test]
@@ -640,31 +695,67 @@ mod tests {
     }
 
     #[test]
-    fn resolve_updater_prefers_versioned_binary_and_falls_back_to_veltrix_exe() {
+    fn resolve_updater_prefers_versioned_binary_and_falls_back_to_generic_name() {
         let root = tempfile::tempdir().unwrap();
         let control = root.path().join(".updater");
         fs::create_dir_all(&control).unwrap();
         let pin = VeltrixPin {
             tag: "v0.1.5".into(),
             sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into(),
+            linux_x86_64_sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+                .into(),
         };
         let payload = b"hello";
 
         assert!(resolve_updater_executable(&control, &pin).is_err());
 
-        let generic = control.join("veltrix.exe");
+        #[cfg(windows)]
+        let (generic_name, versioned_name) = ("veltrix.exe", "veltrix-v0.1.5.exe");
+        #[cfg(not(windows))]
+        let (generic_name, versioned_name) = ("veltrix", "veltrix-v0.1.5");
+
+        let generic = control.join(generic_name);
         fs::write(&generic, payload).unwrap();
         assert_eq!(resolve_updater_executable(&control, &pin).unwrap(), generic);
 
         fs::write(&generic, b"older-veltrix").unwrap();
         assert!(resolve_updater_executable(&control, &pin).is_err());
 
-        let versioned = control.join("veltrix-v0.1.5.exe");
+        let versioned = control.join(versioned_name);
         fs::write(&versioned, payload).unwrap();
         assert_eq!(
             resolve_updater_executable(&control, &pin).unwrap(),
             versioned
         );
+    }
+
+    #[test]
+    fn linux_packaging_scripts_preserve_veltrix_contract() {
+        let pkg = include_str!("../../installer/package-linux.sh");
+        let inst = include_str!("../../installer/install-linux.sh");
+        for required in [
+            "update-linux-x86_64.json",
+            "Dylan-Update-",
+            "Dylan-Installer-",
+            "linux_x86_64_sha256",
+            "dylan version.txt",
+        ] {
+            assert!(
+                pkg.contains(required),
+                "Falta elemento requerido en package-linux.sh: {required}"
+            );
+        }
+        for required in [
+            "chmod 0755",
+            ".updater/app.json",
+            ".updater/update.lock",
+            "[Desktop Entry]",
+        ] {
+            assert!(
+                inst.contains(required),
+                "Falta elemento requerido en install-linux.sh: {required}"
+            );
+        }
     }
 
     #[test]
