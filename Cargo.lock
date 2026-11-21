@@ -6978,7 +6978,7 @@ dependencies = [
 [[package]]
 name = "veltrix-core"
 version = "0.1.0"
-source = "git+https://github.com/paintdev16/veltrix.git?tag=v0.1.4#12c575f66a0580095ec04a1f6c4936c30778009a"
+source = "git+https://github.com/paintdev16/veltrix.git?tag=v0.1.5#a79b7fe7dc22840586a315bdf5d603e25b004642"
 dependencies = [
  "ed25519-dalek",
  "hex",

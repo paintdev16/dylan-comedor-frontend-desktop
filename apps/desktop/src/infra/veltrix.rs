@@ -28,7 +28,7 @@ const CHANNEL: Channel = if IS_BETA {
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// Adaptador real de actualizaciones sobre Veltrix v0.1.4 (protocolo 2).
+/// Adaptador de actualizaciones de Veltrix con confirmación de arranque (protocolo 2).
 pub struct VeltrixUpdater;
 
 struct VeltrixPreparedUpdate {
@@ -557,7 +557,7 @@ mod tests {
     fn pinned_veltrix_release_matches_v0_1_4_and_valid_sha256() {
         let pin: VeltrixPin =
             serde_json::from_str(include_str!("../../installer/veltrix-release.json")).unwrap();
-        assert_eq!(pin.tag, "v0.1.4");
+        assert_eq!(pin.tag, "v0.1.5");
         assert!(decode_key(&pin.sha256).is_ok());
     }
 
@@ -645,7 +645,7 @@ mod tests {
         let control = root.path().join(".updater");
         fs::create_dir_all(&control).unwrap();
         let pin = VeltrixPin {
-            tag: "v0.1.4".into(),
+            tag: "v0.1.5".into(),
             sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into(),
         };
         let payload = b"hello";
@@ -659,7 +659,7 @@ mod tests {
         fs::write(&generic, b"older-veltrix").unwrap();
         assert!(resolve_updater_executable(&control, &pin).is_err());
 
-        let versioned = control.join("veltrix-v0.1.4.exe");
+        let versioned = control.join("veltrix-v0.1.5.exe");
         fs::write(&versioned, payload).unwrap();
         assert_eq!(
             resolve_updater_executable(&control, &pin).unwrap(),

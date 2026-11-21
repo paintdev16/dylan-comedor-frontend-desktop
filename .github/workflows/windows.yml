@@ -198,7 +198,7 @@ jobs:
         if: steps.release.outputs.published != 'true'
         shell: pwsh
         run: |
-          cargo install --locked --git https://github.com/paintdev16/veltrix.git --tag v0.1.4 --root target/veltrix-tools veltrix-sign
+          cargo install --locked --git https://github.com/paintdev16/veltrix.git --tag v0.1.5 --root target/veltrix-tools veltrix-sign
           if ($LASTEXITCODE) { throw 'No se pudo compilar veltrix-sign' }
       - name: Firmar el manifiesto Ed25519
         if: steps.release.outputs.published != 'true'
