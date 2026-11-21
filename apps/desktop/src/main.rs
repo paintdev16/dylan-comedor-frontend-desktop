@@ -47,6 +47,10 @@ fn main() {
         cx.set_global(AppServices::production());
 
         let mut options = TitleBar::window_options();
+        #[cfg(target_os = "linux")]
+        {
+            options.window_decorations = Some(WindowDecorations::Client);
+        }
         options.window_min_size = Some(size(px(720.0), px(460.0)));
         if let Some(titlebar) = &mut options.titlebar {
             titlebar.title = Some("Comedor Dylan".into());

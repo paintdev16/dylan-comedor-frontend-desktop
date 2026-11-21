@@ -33,6 +33,10 @@ pub fn app_title_bar(
     let primary = theme.primary;
     let current_theme = theme_store.read(cx).preference();
 
+    let show_window_controls = cfg!(target_os = "windows")
+        || (cfg!(target_os = "linux")
+            && matches!(window.window_decorations(), Decorations::Client { .. }));
+
     h_flex()
         .id("app-title-bar")
         .w_full()
@@ -52,6 +56,15 @@ pub fn app_title_bar(
                 .pl_3()
                 .pr_2()
                 .window_control_area(WindowControlArea::Drag)
+                .when(cfg!(target_os = "linux"), |this| {
+                    this.on_mouse_down(MouseButton::Left, |event, window, _| {
+                        if event.click_count >= 2 {
+                            window.zoom_window();
+                        } else {
+                            window.start_window_move();
+                        }
+                    })
+                })
                 .child(
                     Icon::new(IconName::LayoutDashboard)
                         .small()
@@ -76,7 +89,9 @@ pub fn app_title_bar(
                 .when_some(update_slot, |slot, child| slot.child(child))
                 .child(theme_dropdown(current_theme, theme_store)),
         )
-        .child(window_controls(window, cx))
+        .when(show_window_controls, |this| {
+            this.child(window_controls(window, cx))
+        })
 }
 
 fn theme_dropdown(current: ThemePreference, theme_store: Entity<ThemeStore>) -> impl IntoElement {
@@ -183,11 +198,18 @@ fn window_control_button(
         .active(move |style| style.bg(active_bg).text_color(hover_fg))
         .when(is_windows, |this| this.window_control_area(area))
         .when(!is_windows, |this| {
-            this.on_click(move |_, window, _| match area {
-                WindowControlArea::Min => window.minimize_window(),
-                WindowControlArea::Max => window.zoom_window(),
-                WindowControlArea::Close => window.remove_window(),
-                WindowControlArea::Drag => {}
+            this.on_mouse_down(MouseButton::Left, |_, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+            })
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                match area {
+                    WindowControlArea::Min => window.minimize_window(),
+                    WindowControlArea::Max => window.zoom_window(),
+                    WindowControlArea::Close => window.remove_window(),
+                    WindowControlArea::Drag => {}
+                }
             })
         })
         .child(Icon::new(icon).small())
