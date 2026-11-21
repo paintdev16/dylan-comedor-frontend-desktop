@@ -3,7 +3,7 @@ pub mod services;
 
 use crate::{
     features::updates::{UpdateEvent, UpdateStore, UpdateTitleBarView},
-    ui::title_bar::app_title_bar,
+    ui::{theme::ThemeStore, title_bar::app_title_bar},
 };
 use gpui_kit::{
     component::{ActiveTheme as _, StyledExt as _, label::Label, v_flex},
@@ -16,20 +16,25 @@ pub struct AppShell {
     updates_visible: bool,
     updates_store: Entity<UpdateStore>,
     updates_view: Entity<UpdateTitleBarView>,
+    theme_store: Entity<ThemeStore>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl AppShell {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let updates_store = cx.new(UpdateStore::new);
         let updates_visible = updates_store.read(cx).is_visible();
         let updates_view = cx.new(|cx| UpdateTitleBarView::new(updates_store.clone(), cx));
+        let theme_store = cx.new(|cx| ThemeStore::new(window, cx));
         let observe_updates = cx.observe(&updates_store, |this, store, cx| {
             let visible = store.read(cx).is_visible();
             if this.updates_visible != visible {
                 this.updates_visible = visible;
                 cx.notify();
             }
+        });
+        let observe_theme = cx.observe(&theme_store, |_, _, cx| {
+            cx.notify();
         });
         let subscribe_updates = cx.subscribe(&updates_store, |_, _, event, cx| match event {
             UpdateEvent::ReadyToQuit => {
@@ -42,7 +47,8 @@ impl AppShell {
             updates_visible,
             updates_store,
             updates_view,
-            _subscriptions: vec![observe_updates, subscribe_updates],
+            theme_store,
+            _subscriptions: vec![observe_updates, observe_theme, subscribe_updates],
         }
     }
 
@@ -70,6 +76,8 @@ impl Render for AppShell {
                 "Comedor Dylan",
                 env!("CARGO_PKG_VERSION"),
                 update_slot,
+                self.theme_store.clone(),
+                window,
                 cx,
             ))
             .child(

@@ -42,9 +42,11 @@ impl Render for UpdateTitleBarView {
                 let tooltip = error
                     .clone()
                     .unwrap_or_else(|| format!("Nueva versión disponible: Dylan v{version}"));
-                let error_icon = error
-                    .as_ref()
-                    .map(|_| Icon::new(IconName::TriangleAlert).xsmall().text_color(danger));
+                let error_icon = error.as_ref().map(|_| {
+                    Icon::new(IconName::TriangleAlert)
+                        .xsmall()
+                        .text_color(danger)
+                });
 
                 h_flex()
                     .items_center()

@@ -54,7 +54,7 @@ fn main() {
         }
 
         open_window(options, cx, |window, cx| {
-            let shell = cx.new(AppShell::new);
+            let shell = cx.new(|cx| AppShell::new(window, cx));
             let shell_for_close = shell.clone();
             window.on_window_should_close(cx, move |_, cx| {
                 let can_close = shell_for_close.read(cx).can_close(cx);

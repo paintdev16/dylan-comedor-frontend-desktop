@@ -94,9 +94,7 @@ impl UpdateStore {
         };
         cx.notify();
         self._task = Some(cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { prepared.handoff() })
-                .await;
+            let result = cx.background_spawn(async move { prepared.handoff() }).await;
             let _ = this.update(cx, |store, cx| match result {
                 Ok(()) => {
                     cx.emit(UpdateEvent::ReadyToQuit);
