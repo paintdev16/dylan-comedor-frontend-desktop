@@ -7,17 +7,17 @@ cargo check --workspace --locked
 cargo run -p dylan
 ```
 
-La versión estable para Windows x64 se instala por usuario en `%LOCALAPPDATA%\Programs\Dylan` con **NSIS** (`apps/desktop/installer/setup.nsi`) y recibe releases del canal `stable` con **Veltrix v0.1.5** (protocolo 2).
+La versión estable para Windows x64 se instala por usuario en `%LOCALAPPDATA%\Programs\Dylan` con **NSIS** (`apps/desktop/installer/setup.nsi`) y recibe releases del canal `stable` con **Veltrix v0.1.7** (protocolo 2).
 
-## Instalador NSIS y actualizaciones Veltrix v0.1.5 (Windows x64)
+## Instalador NSIS y actualizaciones Veltrix v0.1.7 (Windows x64)
 
-Dylan delega la búsqueda, descarga verificada e instalación a **Veltrix v0.1.5**:
+Dylan delega la búsqueda, descarga verificada e instalación a **Veltrix v0.1.7**:
 
-- Cargo fija `veltrix-core` a `tag = "v0.1.5"`.
-- `apps/desktop/installer/veltrix-release.json` fija el tag `v0.1.5` y su SHA-256 oficial (`6d61b6b5fad92058342d8c202dc53eeebce5e4505c4f2dce420a1889ab8387cc`).
+- Cargo fija `veltrix-core` a `tag = "v0.1.7"`.
+- `apps/desktop/installer/veltrix-release.json` fija el tag `v0.1.7` y su SHA-256 oficial (`7a65a7fb8a9c6a3343f11434c540d839162283b988ef6fb62792557e12c53245`).
 - Dylan utiliza el **protocolo 2** (`veltrix_core::CONFIRMED_STARTUP_PROTOCOL`) y llama a `veltrix_core::confirm_startup()` únicamente después del primer render GPUI y de inicializar el estado esencial.
 - Veltrix espera hasta 30 segundos la confirmación de arranque; si Dylan falla o agota el plazo, detiene el proceso nuevo y restaura el respaldo firmado en `.updater/rollback`.
-- NSIS instala `veltrix-v0.1.5.exe` junto a cualquier `veltrix.exe` previo sin sobrescribir archivos activos, usa reintentos (`MoveFileRetry`) para evitar bloqueos transitorios de Windows/Defender, conserva los datos del usuario, `.updater/app.json` y `.updater/update.lock`, y actualiza `Uninstall.exe`.
+- NSIS instala `veltrix-v0.1.7.exe` junto a cualquier `veltrix.exe` previo sin sobrescribir archivos activos, usa reintentos (`MoveFileRetry`) para evitar bloqueos transitorios de Windows/Defender, conserva los datos del usuario, `.updater/app.json` y `.updater/update.lock`, y actualiza `Uninstall.exe`.
 
 ### Compilar y empaquetar en Windows
 
@@ -31,12 +31,12 @@ Invoke-WebRequest "https://github.com/paintdev16/veltrix/releases/download/$($re
 
 ### Firma y publicación de releases
 
-GitHub Actions compila Dylan, genera el Setup NSIS y el manifiesto `update-windows-x86_64.json`, comprueba que NSIS rechaza destinos ajenos y, cuando se ejecuta sobre una etiqueta `v*`, firma el manifiesto con Ed25519 (`DYLAN_SIGNING_KEY` + `veltrix-sign` `v0.1.5`) y prepara el release en borrador sin publicarlo automáticamente.
+GitHub Actions compila Dylan, genera el Setup NSIS y el manifiesto `update-windows-x86_64.json`, comprueba que NSIS rechaza destinos ajenos y, cuando se ejecuta sobre una etiqueta `v*`, firma el manifiesto con Ed25519 (`DYLAN_SIGNING_KEY` + `veltrix-sign` `v0.1.7`) y prepara el release en borrador sin publicarlo automáticamente.
 
 Para firmar y publicar manualmente desde un equipo autorizado:
 
 ```powershell
-cargo install --locked --git https://github.com/paintdev16/veltrix --tag v0.1.5 --root target/veltrix-tools veltrix-sign
+cargo install --locked --git https://github.com/paintdev16/veltrix --tag v0.1.7 --root target/veltrix-tools veltrix-sign
 ./apps/desktop/installer/sign-pilot.ps1 -Bundle target/pilot -Signer target/veltrix-tools/bin/veltrix-sign.exe -RawKey '<ruta privada fuera del repositorio>'
 ./apps/desktop/installer/publish-release.ps1 -Bundle target/pilot -VerifyOnly
 ./apps/desktop/installer/publish-release.ps1 -Bundle target/pilot

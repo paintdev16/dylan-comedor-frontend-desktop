@@ -198,7 +198,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo install --locked --git https://github.com/paintdev16/veltrix.git --tag v0.1.5 --root target/veltrix-tools veltrix-sign
+          cargo install --locked --git https://github.com/paintdev16/veltrix.git --tag v0.1.7 --root target/veltrix-tools veltrix-sign
       - name: Firmar el manifiesto Linux Ed25519 y verificar
         if: steps.release.outputs.published != 'true'
         shell: bash

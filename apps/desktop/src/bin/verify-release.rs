@@ -1,5 +1,12 @@
+use flate2::read::GzDecoder;
 use serde::Deserialize;
-use std::{fs::File, io::Read, path::Path};
+use sha2::{Digest, Sha256};
+use std::{
+    fs::File,
+    io::Read,
+    path::{Component, Path},
+};
+use tar::{Archive, EntryType};
 use veltrix_core::{Channel, Policy, verify_file_sha256, verify_package};
 
 const REPO: &str = "paintdev16/dylan-comedor-frontend-desktop";
@@ -65,34 +72,128 @@ fn package_name(version: &str) -> String {
     }
 }
 
-fn verify_package_format(path: &Path) -> Result<()> {
-    #[cfg(windows)]
+#[cfg(windows)]
+fn verify_windows_installer(path: &Path) -> Result<()> {
+    let mut header = Vec::new();
+    File::open(path)?
+        .take(1024 * 1024)
+        .read_to_end(&mut header)?;
+    if !header.starts_with(b"MZ")
+        || !header
+            .chunks(512)
+            .skip(1)
+            .any(|block| block.get(4..20) == Some(b"\xef\xbe\xad\xdeNullsoftInst"))
     {
-        let mut header = Vec::new();
-        File::open(path)?
-            .take(1024 * 1024)
-            .read_to_end(&mut header)?;
-        if !header.starts_with(b"MZ")
-            || !header
-                .chunks(512)
-                .skip(1)
-                .any(|block| block.get(4..20) == Some(b"\xef\xbe\xad\xdeNullsoftInst"))
-        {
-            return Err("El paquete no contiene una cabecera de instalador NSIS".into());
-        }
-        Ok(())
+        return Err("El paquete no contiene una cabecera de instalador NSIS".into());
     }
-    #[cfg(not(windows))]
-    {
-        let mut magic = [0u8; 2];
-        File::open(path)?.read_exact(&mut magic)?;
-        if magic != [0x1f, 0x8b] {
+    Ok(())
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn verify_linux_archive(
+    path: &Path,
+    expected_version: &str,
+    expected_installed_sha256: &str,
+) -> Result<()> {
+    let expected_hash_bytes = hex::decode(expected_installed_sha256)
+        .map_err(|_| "installed_sha256 no es hexadecimal válido")?;
+    if expected_hash_bytes.len() != 32 {
+        return Err("installed_sha256 debe tener 32 bytes".into());
+    }
+
+    let mut magic = [0u8; 2];
+    File::open(path)?.read_exact(&mut magic)?;
+    if magic != [0x1f, 0x8b] {
+        return Err("El paquete de actualización Linux no tiene cabecera gzip (.tar.gz)".into());
+    }
+
+    let file = File::open(path)?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = Archive::new(decoder);
+
+    let mut saw_dylan = false;
+    let mut saw_version = false;
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if entry.header().entry_type() != EntryType::Regular {
             return Err(
-                "El paquete de actualización Linux no tiene cabecera gzip (.tar.gz)".into(),
+                "El paquete Linux contiene un enlace o entrada que no es un archivo regular".into(),
             );
         }
-        Ok(())
+
+        let entry_path = entry.path()?.into_owned();
+        let mut components = entry_path.components();
+        let Some(Component::Normal(name_os)) = components.next() else {
+            return Err("Ruta inválida dentro del paquete Linux".into());
+        };
+        if components.next().is_some() {
+            return Err(format!(
+                "No se permiten subdirectorios en el paquete Linux: {}",
+                entry_path.display()
+            )
+            .into());
+        }
+        let Some(name) = name_os.to_str() else {
+            return Err("Nombre de archivo no UTF-8 dentro del paquete Linux".into());
+        };
+
+        match name {
+            "dylan" => {
+                if saw_dylan {
+                    return Err("Archivo duplicado en paquete Linux: dylan".into());
+                }
+                saw_dylan = true;
+                let mut hasher = Sha256::new();
+                let mut buf = [0u8; 64 * 1024];
+                loop {
+                    let read = entry.read(&mut buf)?;
+                    if read == 0 {
+                        break;
+                    }
+                    hasher.update(&buf[..read]);
+                }
+                let actual_hash = hasher.finalize();
+                if actual_hash.as_slice() != expected_hash_bytes.as_slice() {
+                    return Err(
+                        "El SHA-256 del ejecutable dylan dentro del .tar.gz no coincide con installed_sha256"
+                            .into(),
+                    );
+                }
+            }
+            "version.txt" => {
+                if saw_version {
+                    return Err("Archivo duplicado en paquete Linux: version.txt".into());
+                }
+                saw_version = true;
+                let mut content = Vec::new();
+                (&mut entry).take(257).read_to_end(&mut content)?;
+                if content.len() > 256 {
+                    return Err("version.txt dentro del paquete Linux es demasiado grande".into());
+                }
+                let text = std::str::from_utf8(&content)
+                    .map_err(|_| "version.txt dentro del paquete Linux no es UTF-8 válido")?
+                    .trim();
+                if text != expected_version {
+                    return Err(format!(
+                        "version.txt dentro del .tar.gz contiene '{text}', se esperaba '{expected_version}'"
+                    )
+                    .into());
+                }
+            }
+            other => {
+                return Err(format!("Entrada no permitida en paquete Linux: {other}").into());
+            }
+        }
     }
+
+    if !saw_dylan || !saw_version {
+        return Err(
+            "El paquete Linux debe contener exactamente los archivos dylan y version.txt".into(),
+        );
+    }
+
+    Ok(())
 }
 
 fn verify(bundle: &Path, version: &str) -> Result<()> {
@@ -123,11 +224,14 @@ fn verify(bundle: &Path, version: &str) -> Result<()> {
     }
     let path = bundle.join(package);
     verify_package(&path, &verified)?;
-    verify_package_format(&path)?;
     let installed_hash = manifest
         .installed_sha256
         .as_deref()
         .ok_or("Falta el SHA-256 firmado del ejecutable instalado")?;
+    #[cfg(windows)]
+    verify_windows_installer(&path)?;
+    #[cfg(not(windows))]
+    verify_linux_archive(&path, version, installed_hash)?;
     let executable = bundle.join("inputs").join(EXECUTABLE_NAME);
     let executable = if executable.is_file() {
         executable
@@ -150,4 +254,137 @@ fn main() -> Result<()> {
     #[cfg(not(windows))]
     println!("Paquete Linux .tar.gz, manifiesto y firma verificados.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use tar::{Builder, Header};
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    fn write_archive(path: &Path, entries: &[(&str, &[u8], EntryType)]) {
+        let file = File::create(path).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut builder = Builder::new(encoder);
+
+        for (name, data, entry_type) in entries {
+            let mut header = Header::new_gnu();
+            header.set_entry_type(*entry_type);
+            if *entry_type == EntryType::Symlink {
+                header.set_size(0);
+                header.set_mode(0o777);
+                header.set_cksum();
+                builder
+                    .append_link(&mut header, *name, "version.txt")
+                    .unwrap();
+            } else {
+                header.set_size(data.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                builder.append_data(&mut header, *name, *data).unwrap();
+            }
+        }
+
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+    }
+
+    #[test]
+    fn accepts_valid_linux_update_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("Dylan-Update-0.1.9-linux-x86_64.tar.gz");
+        let binary = b"\x7fELF-dylan-binary-0.1.9";
+        let hash = sha256_hex(binary);
+
+        write_archive(
+            &archive,
+            &[
+                ("dylan", binary, EntryType::Regular),
+                ("version.txt", b"0.1.9\n", EntryType::Regular),
+            ],
+        );
+
+        verify_linux_archive(&archive, "0.1.9", &hash).unwrap();
+    }
+
+    #[test]
+    fn rejects_missing_or_incorrect_version_txt_in_linux_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = b"\x7fELF-dylan-binary-0.1.9";
+        let hash = sha256_hex(binary);
+
+        let missing_version = dir.path().join("missing-version.tar.gz");
+        write_archive(&missing_version, &[("dylan", binary, EntryType::Regular)]);
+        assert!(verify_linux_archive(&missing_version, "0.1.9", &hash).is_err());
+
+        let wrong_version = dir.path().join("wrong-version.tar.gz");
+        write_archive(
+            &wrong_version,
+            &[
+                ("dylan", binary, EntryType::Regular),
+                ("version.txt", b"0.1.8\n", EntryType::Regular),
+            ],
+        );
+        assert!(verify_linux_archive(&wrong_version, "0.1.9", &hash).is_err());
+    }
+
+    #[test]
+    fn rejects_linux_archive_when_internal_dylan_hash_mismatches() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("mismatch-hash.tar.gz");
+        let expected_hash = sha256_hex(b"\x7fELF-expected-dylan");
+
+        write_archive(
+            &archive,
+            &[
+                ("dylan", b"\x7fELF-tampered-dylan", EntryType::Regular),
+                ("version.txt", b"0.1.9\n", EntryType::Regular),
+            ],
+        );
+
+        assert!(verify_linux_archive(&archive, "0.1.9", &expected_hash).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicates_extra_entries_and_symlinks_in_linux_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = b"\x7fELF-dylan-binary-0.1.9";
+        let hash = sha256_hex(binary);
+
+        let duplicate = dir.path().join("duplicate.tar.gz");
+        write_archive(
+            &duplicate,
+            &[
+                ("dylan", binary, EntryType::Regular),
+                ("dylan", binary, EntryType::Regular),
+                ("version.txt", b"0.1.9\n", EntryType::Regular),
+            ],
+        );
+        assert!(verify_linux_archive(&duplicate, "0.1.9", &hash).is_err());
+
+        let extra = dir.path().join("extra.tar.gz");
+        write_archive(
+            &extra,
+            &[
+                ("dylan", binary, EntryType::Regular),
+                ("version.txt", b"0.1.9\n", EntryType::Regular),
+                ("extra.txt", b"nope", EntryType::Regular),
+            ],
+        );
+        assert!(verify_linux_archive(&extra, "0.1.9", &hash).is_err());
+
+        let symlink = dir.path().join("symlink.tar.gz");
+        write_archive(
+            &symlink,
+            &[
+                ("dylan", binary, EntryType::Regular),
+                ("version.txt", b"", EntryType::Symlink),
+            ],
+        );
+        assert!(verify_linux_archive(&symlink, "0.1.9", &hash).is_err());
+    }
 }

@@ -17,16 +17,49 @@
 !ifdef APP_STABLE
   !define APP_NAME "Dylan"
   !define APP_DIR "Dylan"
-  !define INSTALL_KEY "Software\Dylan"
-  !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Dylan"
 !else
   !define APP_NAME "Dylan Test"
   !define APP_DIR "Dylan-Test-Veltrix"
 !endif
 
+!ifdef TEST_ISOLATION
+  !ifndef TEST_PARENT_DIR
+    !error "TEST_PARENT_DIR es obligatorio con TEST_ISOLATION"
+  !endif
+  !ifndef TEST_INSTALL_DIR
+    !error "TEST_INSTALL_DIR es obligatorio con TEST_ISOLATION"
+  !endif
+  !ifndef TEST_SHORTCUT_DIR
+    !error "TEST_SHORTCUT_DIR es obligatorio con TEST_ISOLATION"
+  !endif
+  !ifndef TEST_REG_ROOT
+    !error "TEST_REG_ROOT es obligatorio con TEST_ISOLATION"
+  !endif
+  !ifndef TEST_MUTEX_SUFFIX
+    !error "TEST_MUTEX_SUFFIX es obligatorio con TEST_ISOLATION"
+  !endif
+  !define TARGET_PARENT_DIR "${TEST_PARENT_DIR}"
+  !define TARGET_INSTALL_DIR "${TEST_INSTALL_DIR}"
+  !define SHORTCUT_DIR "${TEST_SHORTCUT_DIR}"
+  !define SETUP_MUTEX_NAME "Local\${APP_DIR}.Setup.${TEST_MUTEX_SUFFIX}"
+  !ifdef APP_STABLE
+    !define INSTALL_KEY "${TEST_REG_ROOT}\Install"
+    !define UNINSTALL_KEY "${TEST_REG_ROOT}\Uninstall"
+  !endif
+!else
+  !define TARGET_PARENT_DIR "$LOCALAPPDATA\Programs"
+  !define TARGET_INSTALL_DIR "$LOCALAPPDATA\Programs\${APP_DIR}"
+  !define SHORTCUT_DIR "$SMPROGRAMS\${APP_DIR}"
+  !define SETUP_MUTEX_NAME "Local\${APP_DIR}.Setup"
+  !ifdef APP_STABLE
+    !define INSTALL_KEY "Software\Dylan"
+    !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Dylan"
+  !endif
+!endif
+
 Name "${APP_NAME}"
 OutFile "${OUT_DIR}\Dylan-Setup-${APP_VERSION}-x64.exe"
-InstallDir "$LOCALAPPDATA\Programs\${APP_DIR}"
+InstallDir "${TARGET_INSTALL_DIR}"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
@@ -45,20 +78,22 @@ Var BackupExe
 Var FailedOp
 Var FailedWinError
 Var LastWinError
+Var RestoreFailed
 !ifdef APP_STABLE
 Var PreviousVersion
 Var NewUninstaller
 Var BackupUninstaller
+Var UninstallerRestoreWinError
 !endif
 
 Function .onInit
     ; Mantener el handle hasta que termine Setup, incluso con /S.
-    System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Local\${APP_DIR}.Setup") p .r0 ?e'
+    System::Call 'kernel32::CreateMutexW(p 0, i 0, w "${SETUP_MUTEX_NAME}") p .r0 ?e'
     Pop $1
     StrCmp $0 0 busy
     StrCmp $1 183 busy
     ; NSIS aplica /D antes de .onInit. El instalador solo escribe en su propia carpeta.
-    StrCpy $0 "$LOCALAPPDATA\Programs\${APP_DIR}"
+    StrCpy $0 "${TARGET_INSTALL_DIR}"
     StrCmp $0 "$INSTDIR" 0 wrong_dir
 !ifdef APP_STABLE
     ReadRegStr $1 HKCU "${INSTALL_KEY}" "InstallDir"
@@ -66,7 +101,7 @@ Function .onInit
     StrCmp $1 "$INSTDIR" 0 wrong_dir
 !endif
     ; Rechazar redirecciones en el árbol que puede afectar a la instalación.
-    Push "$LOCALAPPDATA\Programs"
+    Push "${TARGET_PARENT_DIR}"
     Call CheckDestinationDirectory
     Push "$INSTDIR"
     Call CheckDestinationDirectory
@@ -206,6 +241,7 @@ Section "Instalar ${APP_NAME}"
     ; Aprovisionar una sola vez. Veltrix mantiene update.lock abierto durante /S.
     StrCpy $FailedOp "create_updater_dir"
     StrCpy $LastWinError "0"
+    StrCpy $RestoreFailed "0"
     ClearErrors
     SetOutPath "$INSTDIR\.updater"
     IfErrors failed
@@ -285,7 +321,10 @@ Section "Instalar ${APP_NAME}"
     Push "$INSTDIR\Uninstall.exe"
     Push "$BackupUninstaller"
     Call CopyFileRetry
-    StrCmp $0 0 restore
+    StrCmp $0 0 0 write_uninst
+    Delete "$BackupUninstaller"
+    StrCpy $BackupUninstaller ""
+    Goto restore
 
     write_uninst:
     StrCpy $FailedOp "write_uninstaller_temp"
@@ -315,7 +354,7 @@ Section "Instalar ${APP_NAME}"
     StrCpy $3 5
     shortcut_dir_loop:
     ClearErrors
-    CreateDirectory "$SMPROGRAMS\${APP_DIR}"
+    CreateDirectory "${SHORTCUT_DIR}"
     IfErrors 0 shortcut_dir_ok
     System::Call 'kernel32::GetLastError() i .r0'
     IntOp $3 $3 - 1
@@ -324,7 +363,7 @@ Section "Instalar ${APP_NAME}"
     Goto shortcut_dir_loop
 
     shortcut_dir_warn:
-    Push "event=warning op=create_shortcut_dir win32=$0 path=$SMPROGRAMS\${APP_DIR}"
+    Push "event=warning op=create_shortcut_dir win32=$0 path=${SHORTCUT_DIR}"
     Call LogSetup
     ClearErrors
     Goto shortcut_done
@@ -333,7 +372,7 @@ Section "Instalar ${APP_NAME}"
     StrCpy $3 5
     shortcut_link_loop:
     ClearErrors
-    CreateShortcut "$SMPROGRAMS\${APP_DIR}\Dylan.lnk" "$INSTDIR\dylan.exe"
+    CreateShortcut "${SHORTCUT_DIR}\Dylan.lnk" "$INSTDIR\dylan.exe"
     IfErrors 0 shortcut_done
     System::Call 'kernel32::GetLastError() i .r0'
     IntOp $3 $3 - 1
@@ -342,7 +381,7 @@ Section "Instalar ${APP_NAME}"
     Goto shortcut_link_loop
 
     shortcut_link_warn:
-    Push "event=warning op=create_shortcut win32=$0 path=$SMPROGRAMS\${APP_DIR}\Dylan.lnk"
+    Push "event=warning op=create_shortcut win32=$0 path=${SHORTCUT_DIR}\Dylan.lnk"
     Call LogSetup
     ClearErrors
 
@@ -367,6 +406,7 @@ Section "Instalar ${APP_NAME}"
 
     restore:
     StrCpy $FailedWinError "$LastWinError"
+    StrCpy $RestoreFailed "0"
     Push "event=restore_start failed_op=$FailedOp win32=$FailedWinError"
     Call LogSetup
 !ifdef APP_STABLE
@@ -378,20 +418,33 @@ Section "Instalar ${APP_NAME}"
     Push "$BackupUninstaller"
     Push "$INSTDIR\Uninstall.exe"
     Call MoveFileRetry
-    StrCmp $0 0 0 restore_exe
-    Push "event=restore_uninstaller_failed win32=$LastWinError"
+    StrCmp $0 0 0 restore_uninst_ok
+    StrCpy $RestoreFailed "1"
+    StrCpy $UninstallerRestoreWinError "$LastWinError"
+    Push "event=restore_uninstaller_failed win32=$LastWinError backup=$BackupUninstaller"
     Call LogSetup
+    Goto restore_exe
+    restore_uninst_ok:
+    StrCpy $BackupUninstaller ""
     restore_exe:
 !endif
     StrCmp $BackupExe "" remove_new
     Push "$BackupExe"
     Push "$INSTDIR\dylan.exe"
     Call MoveFileRetry
-    StrCmp $0 0 rollback_failed failed_restored
+    StrCmp $0 0 rollback_failed exe_restored
     remove_new:
     ClearErrors
     Delete "$INSTDIR\dylan.exe"
-    IfErrors rollback_failed failed_restored
+    IfErrors rollback_failed exe_restored
+
+    exe_restored:
+    StrCpy $BackupExe ""
+    StrCmp $RestoreFailed "1" 0 failed_restored
+!ifdef APP_STABLE
+    StrCpy $LastWinError "$UninstallerRestoreWinError"
+!endif
+    Goto rollback_failed
 
     failed_restored:
     StrCpy $LastWinError "$FailedWinError"
@@ -417,7 +470,17 @@ Section "Instalar ${APP_NAME}"
     Quit
 
     rollback_failed:
+    StrCmp $NewExe "" +2
+    Delete "$NewExe"
+    StrCmp $NewVersion "" +2
+    Delete "$NewVersion"
+!ifdef APP_STABLE
+    StrCmp $NewUninstaller "" +2
+    Delete "$NewUninstaller"
+    Push "event=rollback_failed op=$FailedOp win32=$LastWinError exit=23 backup=$BackupExe uninstaller_backup=$BackupUninstaller"
+!else
     Push "event=rollback_failed op=$FailedOp win32=$LastWinError exit=23 backup=$BackupExe"
+!endif
     Call LogSetup
     SetErrorLevel 23
     IfSilent +2
@@ -440,8 +503,8 @@ Section "Uninstall"
     Delete "$INSTDIR\.updater\update.lock"
     Delete "$INSTDIR\.updater\setup.log"
     Delete "$INSTDIR\Uninstall.exe"
-    Delete "$SMPROGRAMS\${APP_DIR}\Dylan.lnk"
-    RMDir "$SMPROGRAMS\${APP_DIR}"
+    Delete "${SHORTCUT_DIR}\Dylan.lnk"
+    RMDir "${SHORTCUT_DIR}"
     RMDir "$INSTDIR\.updater"
     RMDir "$INSTDIR"
     DeleteRegKey HKCU "${UNINSTALL_KEY}"

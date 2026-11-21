@@ -633,10 +633,10 @@ mod tests {
     }
 
     #[test]
-    fn pinned_veltrix_release_matches_v0_1_5_and_valid_sha256() {
+    fn pinned_veltrix_release_matches_v0_1_7_and_valid_sha256() {
         let pin: VeltrixPin =
             serde_json::from_str(include_str!("../../installer/veltrix-release.json")).unwrap();
-        assert_eq!(pin.tag, "v0.1.5");
+        assert_eq!(pin.tag, "v0.1.7");
         assert!(decode_key(&pin.sha256).is_ok());
         assert!(decode_key(&pin.linux_x86_64_sha256).is_ok());
     }
@@ -725,7 +725,7 @@ mod tests {
         let control = root.path().join(".updater");
         fs::create_dir_all(&control).unwrap();
         let pin = VeltrixPin {
-            tag: "v0.1.5".into(),
+            tag: "v0.1.7".into(),
             sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into(),
             linux_x86_64_sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
                 .into(),
@@ -735,9 +735,9 @@ mod tests {
         assert!(resolve_updater_executable(&control, &pin).is_err());
 
         #[cfg(windows)]
-        let (generic_name, versioned_name) = ("veltrix.exe", "veltrix-v0.1.5.exe");
+        let (generic_name, versioned_name) = ("veltrix.exe", "veltrix-v0.1.7.exe");
         #[cfg(not(windows))]
-        let (generic_name, versioned_name) = ("veltrix", "veltrix-v0.1.5");
+        let (generic_name, versioned_name) = ("veltrix", "veltrix-v0.1.7");
 
         let generic = control.join(generic_name);
         fs::write(&generic, payload).unwrap();
@@ -803,6 +803,7 @@ mod tests {
     fn nsis_script_preserves_retries_atomic_uninstaller_logging_and_rollback() {
         let script = include_str!("../../installer/setup.nsi");
         for required in [
+            "!ifdef TEST_ISOLATION",
             "Function LogSetup",
             "$INSTDIR\\.updater\\setup.log",
             "Function CopyFileRetry",
@@ -811,6 +812,8 @@ mod tests {
             "event=warning op=create_shortcut_dir",
             "event=warning op=create_shortcut",
             "event=restore_start failed_op=$FailedOp win32=$FailedWinError",
+            "event=restore_uninstaller_failed win32=$LastWinError backup=$BackupUninstaller",
+            "uninstaller_backup=$BackupUninstaller",
             "event=failed op=$FailedOp win32=$LastWinError exit=22",
             "SetErrorLevel 20",
             "SetErrorLevel 22",
@@ -825,5 +828,19 @@ mod tests {
             !script.contains("StrCpy $FailedOp \"create_shortcut\""),
             "Los fallos de acceso directo no deben provocar rollback"
         );
+
+        let e2e = include_str!("../../installer/test-repeated-updates.ps1");
+        for required in [
+            "Assert-IsolatedPath",
+            "Remove-IsolatedDirectory",
+            "Remove-IsolatedRegistryTree",
+            "/DTEST_ISOLATION=1",
+            "event=restore_uninstaller_failed",
+        ] {
+            assert!(
+                e2e.contains(required),
+                "Falta elemento requerido en test-repeated-updates.ps1: {required}"
+            );
+        }
     }
 }
