@@ -1,4 +1,5 @@
 #![cfg(windows)]
+
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
     System::Threading::CreateMutexW,
@@ -13,7 +14,7 @@ impl Drop for Instance {
 }
 
 pub fn claim() -> std::io::Result<Option<Instance>> {
-    let mutex_name = if crate::updater::IS_BETA {
+    let mutex_name = if crate::infra::veltrix::IS_BETA {
         "Local\\Dylan.Test.Veltrix.Desktop"
     } else {
         "Local\\Dylan.Desktop"

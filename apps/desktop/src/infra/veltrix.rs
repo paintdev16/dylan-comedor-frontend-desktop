@@ -1,12 +1,16 @@
+use crate::ports::updater::{AvailableUpdate, PreparedUpdate, UpdaterPort};
 use serde::Deserialize;
 use std::{
     fs::{self, File},
     io::{self, Read},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
-use veltrix_core::{Channel, Policy, UpdateOutcome, UpdateRequest, VerifiedManifest};
+use veltrix_core::{Channel, Policy, UpdateRequest, VerifiedManifest};
 
 const OWNER: &str = "paintdev16";
 const REPO: &str = "dylan-comedor-frontend-desktop";
@@ -23,6 +27,44 @@ const CHANNEL: Channel = if IS_BETA {
 };
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+/// Adaptador real de actualizaciones sobre Veltrix v0.1.4 (protocolo 2).
+pub struct VeltrixUpdater;
+
+struct VeltrixPreparedUpdate {
+    job: tempfile::TempDir,
+}
+
+impl AvailableUpdate for Update {
+    fn version(&self) -> &str {
+        &self.version
+    }
+
+    fn download(
+        &self,
+        downloaded: &AtomicU64,
+        total: &AtomicU64,
+    ) -> std::result::Result<Box<dyn PreparedUpdate>, String> {
+        let job = download(self, downloaded, total)?;
+        Ok(Box::new(VeltrixPreparedUpdate { job }))
+    }
+}
+
+impl PreparedUpdate for VeltrixPreparedUpdate {
+    fn handoff(self: Box<Self>) -> std::result::Result<(), String> {
+        handoff(self.job)
+    }
+}
+
+impl UpdaterPort for VeltrixUpdater {
+    fn is_installed(&self) -> bool {
+        installed()
+    }
+
+    fn check(&self) -> std::result::Result<Option<Arc<dyn AvailableUpdate>>, String> {
+        check().map(|maybe| maybe.map(|update| Arc::new(update) as Arc<dyn AvailableUpdate>))
+    }
+}
 
 #[derive(Deserialize)]
 struct Config {
@@ -228,7 +270,7 @@ pub fn handoff(job: tempfile::TempDir) -> std::result::Result<(), String> {
         let root = install_root()?;
         let control = root.join(".updater");
         let pin: VeltrixPin =
-            serde_json::from_str(include_str!("../installer/veltrix-release.json"))?;
+            serde_json::from_str(include_str!("../../installer/veltrix-release.json"))?;
         let updater = resolve_updater_executable(&control, &pin)?;
         prepare_rollback(&root, &control)
             .map_err(|error| format!("No se pudo preparar un respaldo firmado: {error}"))?;
@@ -419,12 +461,8 @@ fn replace_rollback(
     Ok(())
 }
 
-pub fn previous_result() -> Option<UpdateOutcome> {
-    let control = install_root().ok()?.join(".updater");
-    previous_result_in(&control)
-}
-
-fn previous_result_in(control: &Path) -> Option<UpdateOutcome> {
+#[cfg(test)]
+fn previous_result_in(control: &Path) -> Option<veltrix_core::UpdateOutcome> {
     let name = fs::read_to_string(control.join("last-job.txt")).ok()?;
     if !name.starts_with("job-") || Path::new(&name).file_name()?.to_str()? != name {
         return None;
@@ -432,7 +470,7 @@ fn previous_result_in(control: &Path) -> Option<UpdateOutcome> {
     let path = control.join("jobs").join(name);
     Some(match veltrix_core::read_update_events(&path) {
         Ok(events) => veltrix_core::update_outcome(&events),
-        Err(_) => UpdateOutcome::InProgress,
+        Err(_) => veltrix_core::UpdateOutcome::InProgress,
     })
 }
 
@@ -454,11 +492,12 @@ pub fn record_window_started() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use veltrix_core::UpdateOutcome;
 
     const CONFIG: &str = if IS_BETA {
-        include_str!("../installer/app.json")
+        include_str!("../../installer/app.json")
     } else {
-        include_str!("../installer/app-stable.json")
+        include_str!("../../installer/app-stable.json")
     };
     const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -515,10 +554,10 @@ mod tests {
     }
 
     #[test]
-    fn pinned_veltrix_release_matches_v0_1_3_and_valid_sha256() {
+    fn pinned_veltrix_release_matches_v0_1_4_and_valid_sha256() {
         let pin: VeltrixPin =
-            serde_json::from_str(include_str!("../installer/veltrix-release.json")).unwrap();
-        assert_eq!(pin.tag, "v0.1.3");
+            serde_json::from_str(include_str!("../../installer/veltrix-release.json")).unwrap();
+        assert_eq!(pin.tag, "v0.1.4");
         assert!(decode_key(&pin.sha256).is_ok());
     }
 
@@ -606,7 +645,7 @@ mod tests {
         let control = root.path().join(".updater");
         fs::create_dir_all(&control).unwrap();
         let pin = VeltrixPin {
-            tag: "v0.1.2".into(),
+            tag: "v0.1.4".into(),
             sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into(),
         };
         let payload = b"hello";
@@ -620,7 +659,7 @@ mod tests {
         fs::write(&generic, b"older-veltrix").unwrap();
         assert!(resolve_updater_executable(&control, &pin).is_err());
 
-        let versioned = control.join("veltrix-v0.1.2.exe");
+        let versioned = control.join("veltrix-v0.1.4.exe");
         fs::write(&versioned, payload).unwrap();
         assert_eq!(
             resolve_updater_executable(&control, &pin).unwrap(),
@@ -630,7 +669,7 @@ mod tests {
 
     #[test]
     fn nsis_script_preserves_retries_atomic_uninstaller_logging_and_rollback() {
-        let script = include_str!("../installer/setup.nsi");
+        let script = include_str!("../../installer/setup.nsi");
         for required in [
             "Function LogSetup",
             "$INSTDIR\\.updater\\setup.log",
